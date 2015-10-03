@@ -202,6 +202,9 @@ const char *dump_av_sm_event_name(btif_av_sm_event_t event)
         CASE_RETURN_STR(BTIF_AV_STOP_STREAM_REQ_EVT)
         CASE_RETURN_STR(BTIF_AV_SUSPEND_STREAM_REQ_EVT)
         CASE_RETURN_STR(BTIF_AV_SINK_CONFIG_REQ_EVT)
+#ifdef USE_AUDIO_TRACK
+        CASE_RETURN_STR(BTIF_AV_SINK_FOCUS_REQ_EVT)
+#endif
         default: return "UNKNOWN_EVENT";
    }
 }
@@ -647,6 +650,9 @@ static BOOLEAN btif_av_state_opened_handler(btif_sm_event_t event, void *p_data)
             if (btif_av_cb.peer_sep == AVDT_TSEP_SRC)
             {
                 btif_a2dp_set_rx_flush(FALSE); /*  remove flush state, ready for streaming*/
+#ifdef USE_AUDIO_TRACK
+                audio_focus_status(BTIF_MEIDA_FOCUS_READY);
+#endif
             }
 
             /* change state to started, send acknowledgement if start is pending */
@@ -852,6 +858,13 @@ static BOOLEAN btif_av_state_started_handler(btif_sm_event_t event, void *p_data
             /* suspend completed and state changed, clear pending status */
             btif_av_cb.flags &= ~BTIF_AV_FLAG_LOCAL_SUSPEND_PENDING;
             break;
+
+#ifdef USE_AUDIO_TRACK
+            case BTIF_AV_SINK_FOCUS_REQ_EVT:
+                HAL_CBACK(bt_av_sink_callbacks, audio_focus_request_cb,
+                                                   &(btif_av_cb.peer_bda));
+            break;
+#endif
 
         case BTA_AV_STOP_EVT:
 
@@ -1083,6 +1096,37 @@ static bt_status_t init_sink(btav_callbacks_t* callbacks)
     return status;
 }
 
+#ifdef USE_AUDIO_TRACK
+/*******************************************************************************
+**
+** Function         audio_focus_status
+**
+** Description      Update Audio Focus State
+**
+** Returns          None
+**
+*******************************************************************************/
+void audio_focus_status(int state)
+{
+    BTIF_TRACE_DEBUG(" audio_focus_status  %d ",state);
+    btif_a2dp_set_audio_focus_state(state);
+}
+
+/*******************************************************************************
+**
+** Function         btif_queue_focus_rquest
+**
+** Description      This is used to move context to btif and queue audio_focus_request
+**
+** Returns          none
+**
+*******************************************************************************/
+void btif_queue_focus_rquest(void)
+{
+    btif_transfer_context(btif_av_handle_event, BTIF_AV_SINK_FOCUS_REQ_EVT, NULL, 0, NULL);
+}
+#endif
+
 /*******************************************************************************
 **
 ** Function         connect
@@ -1202,6 +1246,10 @@ static const btav_interface_t bt_av_sink_interface = {
     sink_connect_src,
     disconnect,
     cleanup_sink,
+    NULL,
+#ifdef USE_AUDIO_TRACK
+    audio_focus_status,
+#endif
 };
 
 /*******************************************************************************
