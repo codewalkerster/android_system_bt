@@ -24,6 +24,7 @@
  *  Description:   Bluetooth AVRC implementation
  *
  *****************************************************************************/
+#include <errno.h>
 #include <hardware/bluetooth.h>
 #include <fcntl.h>
 #include <string.h>
@@ -145,7 +146,6 @@ static int  uinput_driver_check();
 static int  uinput_create(char *name);
 static int  init_uinput (void);
 static void close_uinput (void);
-static BOOLEAN dev_blacklisted_for_absolute_volume(BD_ADDR peer_dev);
 
 static const struct {
     const char *name;
@@ -161,27 +161,6 @@ static const struct {
     { "REWIND",       AVRC_ID_REWIND,   KEY_REWIND,       0 },
     { "FAST FORWARD", AVRC_ID_FAST_FOR, KEY_FAST_FORWARD, 0 },
     { NULL,           0,                0,                0 }
-};
-
-/* the rc_black_addr_prefix and rc_white_addr_prefix are used to correct
- * IOP issues of absolute volume feature
- * We encoutered A2DP headsets/carkits advertising absolute volume but buggy.
- * We would like to blacklist those devices.
- * But we donot have a full list of the bad devices. So as a temp fix, we
- * are blacklisting all the devices except the devices we have well tested,
- * the ones in the whitelist.
- *
- * For now, only the rc_white_addr_prefix is used in the code while
- * rc_black_addr_prefix is kept here for future long term solution.
- */
-static const UINT8 rc_white_addr_prefix[][3] = {
-    {0x94, 0xCE, 0x2C}, // Sony SBH50
-    {0x30, 0x17, 0xC8} // Sony wm600
-};
-
-static const char* rc_white_name[] = {
-    "SBH50",
-    "MW600"
 };
 
 static void send_reject_response (UINT8 rc_handle, UINT8 label,
@@ -235,7 +214,7 @@ int send_event (int fd, uint16_t type, uint16_t code, int32_t value)
     event.code  = code;
     event.value = value;
 
-    return write(fd, &event, sizeof(event));
+    return TEMP_FAILURE_RETRY(write(fd, &event, sizeof(event)));
 }
 
 void send_key (int fd, uint16_t key, int pressed)
@@ -274,7 +253,7 @@ int uinput_create(char *name)
 
     for(x=0; x < MAX_UINPUT_PATHS; x++)
     {
-        fd = open(uinput_dev_path[x], O_RDWR);
+        fd = TEMP_FAILURE_RETRY(open(uinput_dev_path[x], O_RDWR));
         if (fd < 0)
             continue;
         break;
@@ -292,20 +271,20 @@ int uinput_create(char *name)
     dev.id.product = 0x0000;
     dev.id.version = 0x0000;
 
-    if (write(fd, &dev, sizeof(dev)) < 0) {
+    if (TEMP_FAILURE_RETRY(write(fd, &dev, sizeof(dev))) < 0) {
         BTIF_TRACE_ERROR("%s Unable to write device information", __FUNCTION__);
         close(fd);
         return -1;
     }
 
-    ioctl(fd, UI_SET_EVBIT, EV_KEY);
-    ioctl(fd, UI_SET_EVBIT, EV_REL);
-    ioctl(fd, UI_SET_EVBIT, EV_SYN);
+    TEMP_FAILURE_RETRY(ioctl(fd, UI_SET_EVBIT, EV_KEY));
+    TEMP_FAILURE_RETRY(ioctl(fd, UI_SET_EVBIT, EV_REL));
+    TEMP_FAILURE_RETRY(ioctl(fd, UI_SET_EVBIT, EV_SYN));
 
     for (x = 0; key_map[x].name != NULL; x++)
-        ioctl(fd, UI_SET_KEYBIT, key_map[x].mapped_id);
+        TEMP_FAILURE_RETRY(ioctl(fd, UI_SET_KEYBIT, key_map[x].mapped_id));
 
-    if (ioctl(fd, UI_DEV_CREATE, NULL) < 0) {
+    if (TEMP_FAILURE_RETRY(ioctl(fd, UI_DEV_CREATE, NULL)) < 0) {
         BTIF_TRACE_ERROR("%s Unable to create uinput device", __FUNCTION__);
         close(fd);
         return -1;
@@ -333,7 +312,7 @@ void close_uinput (void)
 {
     BTIF_TRACE_DEBUG("%s", __FUNCTION__);
     if (uinput_fd > 0) {
-        ioctl(uinput_fd, UI_DEV_DESTROY);
+        TEMP_FAILURE_RETRY(ioctl(uinput_fd, UI_DEV_DESTROY));
 
         close(uinput_fd);
         uinput_fd = -1;
@@ -346,24 +325,28 @@ void handle_rc_features()
     bt_bdaddr_t rc_addr;
     bdcpy(rc_addr.address, btif_rc_cb.rc_addr);
 
-    if (dev_blacklisted_for_absolute_volume(btif_rc_cb.rc_addr))
-    {
-        btif_rc_cb.rc_features &= ~BTA_AV_FEAT_ADV_CTRL;
-    }
+    // TODO(eisenbach): If devices need to be blacklisted for absolute
+    // volume, it should be added to device/include/interop_database.h
+    // For now, everything goes... If blacklisting is necessary, exclude
+    // the following bit here:
+    //    btif_rc_cb.rc_features &= ~BTA_AV_FEAT_ADV_CTRL;
 
     if (btif_rc_cb.rc_features & BTA_AV_FEAT_BROWSE)
     {
         rc_features |= BTRC_FEAT_BROWSE;
     }
+
     if ( (btif_rc_cb.rc_features & BTA_AV_FEAT_ADV_CTRL) &&
          (btif_rc_cb.rc_features & BTA_AV_FEAT_RCTG))
     {
         rc_features |= BTRC_FEAT_ABSOLUTE_VOLUME;
     }
+
     if (btif_rc_cb.rc_features & BTA_AV_FEAT_METADATA)
     {
         rc_features |= BTRC_FEAT_METADATA;
     }
+
     BTIF_TRACE_DEBUG("%s: rc_features=0x%x", __FUNCTION__, rc_features);
     HAL_CBACK(bt_rc_callbacks, remote_features_cb, &rc_addr, rc_features)
 
@@ -1883,44 +1866,4 @@ void release_transaction(UINT8 lbl)
 void lbl_destroy()
 {
     pthread_mutex_destroy(&(device.lbllock));
-}
-
-/*******************************************************************************
-**      Function       dev_blacklisted_for_absolute_volume
-**
-**      Description    Blacklist Devices that donot handle absolute volume well
-**                     We are blacklisting all the devices that are not in whitelist
-**
-**      Returns        True if the device is in the list
-*******************************************************************************/
-static BOOLEAN dev_blacklisted_for_absolute_volume(BD_ADDR peer_dev)
-{
-    int i;
-    char *dev_name_str = NULL;
-    int whitelist_size = sizeof(rc_white_addr_prefix)/sizeof(rc_white_addr_prefix[0]);
-
-    for (i = 0; i < whitelist_size; i++) {
-        if (rc_white_addr_prefix[i][0] == peer_dev[0] &&
-            rc_white_addr_prefix[i][1] == peer_dev[1] &&
-            rc_white_addr_prefix[i][2] == peer_dev[2]) {
-            BTIF_TRACE_DEBUG("whitelist absolute volume for %02x:%02x:%02x",
-                              peer_dev[0], peer_dev[1], peer_dev[2]);
-            return FALSE;
-        }
-    }
-
-    dev_name_str = BTM_SecReadDevName(peer_dev);
-    whitelist_size = sizeof(rc_white_name)/sizeof(char*);
-    if (dev_name_str != NULL) {
-        for (i = 0; i < whitelist_size; i++) {
-            if (strcmp(dev_name_str, rc_white_name[i]) == 0) {
-                BTIF_TRACE_DEBUG("whitelist absolute volume for %s", dev_name_str);
-                return FALSE;
-            }
-        }
-    }
-
-    BTIF_TRACE_WARNING("blacklist absolute volume for %02x:%02x:%02x, name = %s",
-                        peer_dev[0], peer_dev[1], peer_dev[2], dev_name_str);
-    return TRUE;
 }

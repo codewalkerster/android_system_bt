@@ -107,6 +107,8 @@ struct a2dp_stream_common {
 struct a2dp_stream_out {
     struct audio_stream_out stream;
     struct a2dp_stream_common common;
+    uint64_t frames_presented; // frames written, never reset
+    uint64_t frames_rendered;  // frames written, reset on standby
 };
 
 struct a2dp_stream_in {
@@ -242,7 +244,7 @@ static int skt_read(int fd, void *p, size_t len)
 
     ts_log("skt_read recv", len, NULL);
 
-    if ((read = recv(fd, p, len, MSG_NOSIGNAL)) == -1)
+    if ((read = TEMP_FAILURE_RETRY(recv(fd, p, len, MSG_NOSIGNAL))) == -1)
     {
         ERROR("write failed with errno=%d\n", errno);
         return -1;
@@ -264,12 +266,12 @@ static int skt_write(int fd, const void *p, size_t len)
     /* poll for 500 ms */
 
     /* send time out */
-    if (poll(&pfd, 1, 500) == 0)
+    if (TEMP_FAILURE_RETRY(poll(&pfd, 1, 500)) == 0)
         return 0;
 
     ts_log("skt_write", len, NULL);
 
-    if ((sent = send(fd, p, len, MSG_NOSIGNAL)) == -1)
+    if ((sent = TEMP_FAILURE_RETRY(send(fd, p, len, MSG_NOSIGNAL))) == -1)
     {
         ERROR("write failed with errno=%d\n", errno);
         return -1;
@@ -300,14 +302,14 @@ static int skt_disconnect(int fd)
 
 static int a2dp_ctrl_receive(struct a2dp_stream_common *common, void* buffer, int length)
 {
-    int ret = recv(common->ctrl_fd, buffer, length, MSG_NOSIGNAL);
+    int ret = TEMP_FAILURE_RETRY(recv(common->ctrl_fd, buffer, length, MSG_NOSIGNAL));
     if (ret < 0)
     {
         ERROR("ack failed (%s)", strerror(errno));
         if (errno == EINTR)
         {
             /* retry again */
-            ret = recv(common->ctrl_fd, buffer, length, MSG_NOSIGNAL);
+            ret = TEMP_FAILURE_RETRY(recv(common->ctrl_fd, buffer, length, MSG_NOSIGNAL));
             if (ret < 0)
             {
                ERROR("ack failed (%s)", strerror(errno));
@@ -334,7 +336,7 @@ static int a2dp_command(struct a2dp_stream_common *common, char cmd)
     DEBUG("A2DP COMMAND %s", dump_a2dp_ctrl_event(cmd));
 
     /* send command */
-    if (send(common->ctrl_fd, &cmd, 1, MSG_NOSIGNAL) == -1)
+    if (TEMP_FAILURE_RETRY(send(common->ctrl_fd, &cmd, 1, MSG_NOSIGNAL)) == -1)
     {
         ERROR("cmd failed (%s)", strerror(errno));
         skt_disconnect(common->ctrl_fd);
@@ -407,13 +409,13 @@ static void a2dp_open_ctrl_path(struct a2dp_stream_common *common)
                 break;
 
             ERROR("error : a2dp not ready, wait 250 ms and retry");
-            usleep(250000);
+            TEMP_FAILURE_RETRY(usleep(250000));
             skt_disconnect(common->ctrl_fd);
             common->ctrl_fd = AUDIO_SKT_DISCONNECTED;
         }
 
         /* ctrl channel not ready, wait a bit */
-        usleep(250000);
+        TEMP_FAILURE_RETRY(usleep(250000));
     }
 }
 
@@ -576,7 +578,7 @@ static ssize_t out_write(struct audio_stream_out *stream, const void* buffer,
 
             DEBUG("emulate a2dp write delay (%d us)", us_delay);
 
-            usleep(us_delay);
+            TEMP_FAILURE_RETRY(usleep(us_delay));
             pthread_mutex_unlock(&out->common.lock);
             return -1;
         }
@@ -591,14 +593,17 @@ static ssize_t out_write(struct audio_stream_out *stream, const void* buffer,
     pthread_mutex_unlock(&out->common.lock);
     sent = skt_write(out->common.audio_fd, buffer,  bytes);
 
-    if (sent == -1)
-    {
+    if (sent == -1) {
         skt_disconnect(out->common.audio_fd);
         out->common.audio_fd = AUDIO_SKT_DISCONNECTED;
         if (out->common.state != AUDIO_A2DP_STATE_SUSPENDED)
             out->common.state = AUDIO_A2DP_STATE_STOPPED;
         else
             ERROR("write failed : stream suspended, avoid resetting state");
+    } else {
+        const size_t frames = bytes / audio_stream_out_frame_size(stream);
+        out->frames_rendered += frames;
+        out->frames_presented += frames;
     }
 
     DEBUG("wrote %d bytes out of %zu bytes", sent, bytes);
@@ -676,6 +681,7 @@ static int out_standby(struct audio_stream *stream)
     // Do nothing in SUSPENDED state.
     if (out->common.state != AUDIO_A2DP_STATE_SUSPENDED)
         retVal = suspend_audio_datapath(&out->common, true);
+    out->frames_rendered = 0; // rendered is reset, presented is not
     pthread_mutex_unlock (&out->common.lock);
 
     return retVal;
@@ -786,16 +792,45 @@ static int out_set_volume(struct audio_stream_out *stream, float left,
     return -ENOSYS;
 }
 
+static int out_get_presentation_position(const struct audio_stream_out *stream,
+                                         uint64_t *frames, struct timespec *timestamp)
+{
+    struct a2dp_stream_out *out = (struct a2dp_stream_out *)stream;
 
+    FNLOG();
+    if (stream == NULL || frames == NULL || timestamp == NULL)
+        return -EINVAL;
+
+    int ret = -EWOULDBLOCK;
+    pthread_mutex_lock(&out->common.lock);
+    uint64_t latency_frames = (uint64_t)out_get_latency(stream) * out->common.cfg.rate / 1000;
+    if (out->frames_presented >= latency_frames) {
+        *frames = out->frames_presented - latency_frames;
+        clock_gettime(CLOCK_MONOTONIC, timestamp); // could also be associated with out_write().
+        ret = 0;
+    }
+    pthread_mutex_unlock(&out->common.lock);
+    return ret;
+}
 
 static int out_get_render_position(const struct audio_stream_out *stream,
                                    uint32_t *dsp_frames)
 {
-    UNUSED(stream);
-    UNUSED(dsp_frames);
+    struct a2dp_stream_out *out = (struct a2dp_stream_out *)stream;
 
     FNLOG();
-    return -EINVAL;
+    if (stream == NULL || dsp_frames == NULL)
+        return -EINVAL;
+
+    pthread_mutex_lock(&out->common.lock);
+    uint64_t latency_frames = (uint64_t)out_get_latency(stream) * out->common.cfg.rate / 1000;
+    if (out->frames_rendered >= latency_frames) {
+        *dsp_frames = (uint32_t)(out->frames_rendered - latency_frames);
+    } else {
+        *dsp_frames = 0;
+    }
+    pthread_mutex_unlock(&out->common.lock);
+    return 0;
 }
 
 static int out_add_audio_effect(const struct audio_stream *stream, effect_handle_t effect)
@@ -950,7 +985,7 @@ static ssize_t in_read(struct audio_stream_in *stream, void* buffer,
 
             DEBUG("emulate a2dp read delay (%d us)", us_delay);
 
-            usleep(us_delay);
+            TEMP_FAILURE_RETRY(usleep(us_delay));
             pthread_mutex_unlock(&in->common.lock);
             return -1;
         }
@@ -1048,6 +1083,8 @@ static int adev_open_output_stream(struct audio_hw_device *dev,
     out->stream.set_volume = out_set_volume;
     out->stream.write = out_write;
     out->stream.get_render_position = out_get_render_position;
+    out->stream.get_presentation_position = out_get_presentation_position;
+
 
     /* initialize a2dp specifics */
     a2dp_stream_common_init(&out->common);
@@ -1077,7 +1114,7 @@ static int adev_open_output_stream(struct audio_hw_device *dev,
     DEBUG("success");
     /* Delay to ensure Headset is in proper state when START is initiated
        from DUT immediately after the connection due to ongoing music playback. */
-    usleep(250000);
+    TEMP_FAILURE_RETRY(usleep(250000));
     return 0;
 
 err_open:
