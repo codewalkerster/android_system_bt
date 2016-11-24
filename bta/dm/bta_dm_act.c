@@ -539,21 +539,18 @@ void bta_dm_set_dev_name (tBTA_DM_MSG *p_data)
 void bta_dm_set_visibility(tBTA_DM_MSG *p_data)
 {
     UINT16 window, interval;
-#if (BTA_GATT_INCLUDED == TRUE)
     UINT16 le_disc_mode = BTM_BleReadDiscoverability();
-    UINT16 le_conn_mode = BTM_BleReadConnectability();
-#endif // BTA_GATT_INCLUDED
     UINT16 disc_mode = BTM_ReadDiscoverability(&window, &interval);
+    UINT16 le_conn_mode = BTM_BleReadConnectability();
     UINT16 conn_mode = BTM_ReadConnectability(&window, &interval);
 
     /* set modes for Discoverability and connectability if not ignore */
     if (p_data->set_visibility.disc_mode != (BTA_DM_IGNORE | BTA_DM_LE_IGNORE))
     {
-#if (BTA_GATT_INCLUDED == TRUE)
         if ((p_data->set_visibility.disc_mode & BTA_DM_LE_IGNORE) == BTA_DM_LE_IGNORE)
             p_data->set_visibility.disc_mode =
                 ((p_data->set_visibility.disc_mode & ~BTA_DM_LE_IGNORE) | le_disc_mode);
-#endif // BTA_GATT_INCLUDED
+
         if ((p_data->set_visibility.disc_mode & BTA_DM_IGNORE) == BTA_DM_IGNORE)
             p_data->set_visibility.disc_mode =
                 ((p_data->set_visibility.disc_mode & ~BTA_DM_IGNORE) | disc_mode);
@@ -565,11 +562,10 @@ void bta_dm_set_visibility(tBTA_DM_MSG *p_data)
 
     if (p_data->set_visibility.conn_mode != (BTA_DM_IGNORE | BTA_DM_LE_IGNORE))
     {
-#if (BTA_GATT_INCLUDED == TRUE)
         if ((p_data->set_visibility.conn_mode & BTA_DM_LE_IGNORE) == BTA_DM_LE_IGNORE)
             p_data->set_visibility.conn_mode =
                 ((p_data->set_visibility.conn_mode & ~BTA_DM_LE_IGNORE) | le_conn_mode);
-#endif // BTA_GATT_INCLUDED
+
         if ((p_data->set_visibility.conn_mode & BTA_DM_IGNORE) == BTA_DM_IGNORE)
             p_data->set_visibility.conn_mode =
                 ((p_data->set_visibility.conn_mode & ~BTA_DM_IGNORE) | conn_mode);
@@ -648,7 +644,6 @@ void bta_dm_process_remove_device(BD_ADDR bd_addr)
 void bta_dm_remove_device(tBTA_DM_MSG *p_data)
 {
     tBTA_DM_API_REMOVE_DEVICE *p_dev = &p_data->remove_dev;
-    BOOLEAN continue_delete_other_dev = FALSE;
     if (p_dev == NULL)
         return;
 
@@ -670,13 +665,8 @@ void bta_dm_remove_device(tBTA_DM_MSG *p_data)
         {
             if (!bdcmp(bta_dm_cb.device_list.peer_device[i].peer_bdaddr, p_dev->bd_addr))
             {
-                uint8_t transport = BT_TRANSPORT_BR_EDR;
-#if (BTA_GATT_INCLUDED == TRUE)
-                transport = bta_dm_cb.device_list.peer_device[i].transport;
-#endif  // BTA_GATT_INCLUDED
                 bta_dm_cb.device_list.peer_device[i].conn_state = BTA_DM_UNPAIRING;
-                btm_remove_acl( p_dev->bd_addr, transport);
-#if (BTA_GATT_INCLUDED == TRUE)
+                btm_remove_acl( p_dev->bd_addr, bta_dm_cb.device_list.peer_device[i].transport);
                 APPL_TRACE_DEBUG("%s:transport = %d", __func__,
                                   bta_dm_cb.device_list.peer_device[i].transport);
 
@@ -685,7 +675,6 @@ void bta_dm_remove_device(tBTA_DM_MSG *p_data)
                    other_transport = BT_TRANSPORT_BR_EDR;
                 else
                    other_transport = BT_TRANSPORT_LE;
-#endif  // BTA_GATT_INCLUDED
                 break;
             }
         }
@@ -694,9 +683,10 @@ void bta_dm_remove_device(tBTA_DM_MSG *p_data)
     {
         continue_delete_dev = TRUE;
     }
-#if (BTA_GATT_INCLUDED == TRUE)
+
     // If it is DUMO device and device is paired as different address, unpair that device
     // if different address
+    BOOLEAN continue_delete_other_dev = FALSE;
     if ((other_transport && (BTM_ReadConnectedTransportAddress(other_address, other_transport))) ||
       (!other_transport && (BTM_ReadConnectedTransportAddress(other_address, BT_TRANSPORT_BR_EDR) ||
        BTM_ReadConnectedTransportAddress(other_address, BT_TRANSPORT_LE))))
@@ -718,7 +708,7 @@ void bta_dm_remove_device(tBTA_DM_MSG *p_data)
         APPL_TRACE_DEBUG("%s: continue to delete the other dev ", __func__);
         continue_delete_other_dev = TRUE;
     }
-#endif // BTA_GATT_INCLUDED
+
     /* Delete the device mentioned in the msg */
     if (continue_delete_dev)
         bta_dm_process_remove_device(p_dev->bd_addr);
@@ -2323,7 +2313,7 @@ static void bta_dm_discover_device(BD_ADDR remote_bd_addr)
         APPL_TRACE_DEBUG("%s appl_knows_rem_name %d", __func__,
                             bta_dm_search_cb.p_btm_inq_info->appl_knows_rem_name);
     }
-#if (BLE_INCLUDED == TRUE)
+
     if((bta_dm_search_cb.p_btm_inq_info)
        && (bta_dm_search_cb.p_btm_inq_info->results.device_type == BT_DEVICE_TYPE_BLE)
        && (bta_dm_search_cb.state == BTA_DM_SEARCH_ACTIVE))
@@ -2331,7 +2321,7 @@ static void bta_dm_discover_device(BD_ADDR remote_bd_addr)
         /* Do not perform RNR for LE devices at inquiry complete*/
         bta_dm_search_cb.name_discover_done = TRUE;
     }
-#endif
+
     /* if name discovery is not done and application needs remote name */
     if ((!bta_dm_search_cb.name_discover_done)
        && (( bta_dm_search_cb.p_btm_inq_info == NULL )
