@@ -1299,9 +1299,9 @@ tBTM_STATUS BTM_SetLinkSuperTout (BD_ADDR remote_bda, UINT16 timeout)
         /* Only send if current role is Master; 2.0 spec requires this */
         if (p->link_role == BTM_ROLE_MASTER)
         {
-            if (!btsnd_hcic_write_link_super_tout (LOCAL_BR_EDR_CONTROLLER_ID,
-                                                   p->hci_handle, timeout))
-                return(BTM_NO_RESOURCES);
+            //if (!btsnd_hcic_write_link_super_tout (LOCAL_BR_EDR_CONTROLLER_ID,
+            //                                       p->hci_handle, timeout))
+            //    return(BTM_NO_RESOURCES);
 
             return(BTM_CMD_STARTED);
         }
