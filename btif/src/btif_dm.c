@@ -1089,6 +1089,16 @@ static void btif_dm_auth_cmpl_evt (tBTA_DM_AUTH_CMPL *p_auth_cmpl)
         }
     }
 
+    // We could have received a new link key without going through the pairing flow.
+    // If so, we don't want to perform SDP or any other operations on the authenticated
+    // device.
+    if (!bdaddr_equals(p_auth_cmpl->bd_addr, pairing_cb.bd_addr)) {
+      char address[32];
+      bdaddr_to_string(&p_auth_cmpl->bd_addr, address, sizeof(address));
+      LOG_INFO("%s skipping SDP since we did not initiate pairing to %s.", __func__, address);
+      return;
+    }
+
     // Skip SDP for certain  HID Devices
     if (p_auth_cmpl->success)
     {
@@ -2915,9 +2925,9 @@ static void btif_dm_ble_auth_cmpl_evt (tBTA_DM_AUTH_CMPL *p_auth_cmpl)
             state = BT_BOND_STATE_NONE;
         } else {
             btif_dm_save_ble_bonding_keys();
+            BTA_GATTC_Refresh(bd_addr.address);
+            btif_dm_get_remote_services_by_transport(&bd_addr, BTA_GATT_TRANSPORT_LE);
         }
-        BTA_GATTC_Refresh(bd_addr.address);
-        btif_dm_get_remote_services_by_transport(&bd_addr, BTA_GATT_TRANSPORT_LE);
     }
     else
     {
