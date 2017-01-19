@@ -28,6 +28,7 @@
 #define LOG_TAG "bt_btif_dm"
 
 #include <assert.h>
+#include <errno.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1792,7 +1793,7 @@ static void btif_dm_upstreams_evt(UINT16 event, char* p_param)
             BTIF_TRACE_ERROR("Received H/W Error. ");
             /* Flush storage data */
             btif_config_flush();
-            usleep(100000); /* 100milliseconds */
+            TEMP_FAILURE_RETRY(usleep(100000)); /* 100milliseconds */
             /* Killing the process to force a restart as part of fault tolerance */
             kill(getpid(), SIGKILL);
             break;
@@ -2446,7 +2447,7 @@ bt_status_t btif_dm_pin_reply( const bt_bdaddr_t *bd_addr, uint8_t accept,
                                uint8_t pin_len, bt_pin_code_t *pin_code)
 {
     BTIF_TRACE_EVENT("%s: accept=%d", __FUNCTION__, accept);
-    if (pin_code == NULL)
+    if (pin_code == NULL || pin_len > PIN_CODE_LEN)
         return BT_STATUS_FAIL;
 #if (defined(BLE_INCLUDED) && (BLE_INCLUDED == TRUE))
 
