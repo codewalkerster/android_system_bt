@@ -105,7 +105,6 @@ void HciTransport::OnFileCanWriteWithoutBlocking(int fd) {
   CHECK(fd == GetVendorFd());
   if (!outbound_events_.empty()) {
     base::TimeTicks current_time = base::TimeTicks::Now();
-    auto it = outbound_events_.begin();
     // Check outbound events for events that can be sent, i.e. events with a
     // timestamp before the current time. Stop sending events when
     // |packet_stream_| fails writing.
@@ -131,6 +130,7 @@ void HciTransport::PostEventResponse(std::unique_ptr<EventPacket> event) {
       std::make_unique<TimeStampedEvent>(std::move(event)));
 }
 
+#include <inttypes.h>
 void HciTransport::PostDelayedEventResponse(std::unique_ptr<EventPacket> event,
                                             base::TimeDelta delay) {
   // TODO(dennischeng): When it becomes available for MessageLoopForIO, use the
@@ -148,7 +148,7 @@ void HciTransport::PostDelayedEventResponse(std::unique_ptr<EventPacket> event,
     PostEventResponse(std::move(event));
   }
 
-  LOG_INFO(LOG_TAG, "Posting event response with delay of %lld ms.",
+  LOG_INFO(LOG_TAG, "Posting event response with delay of %" PRId64 "ms.",
            delay.InMilliseconds());
 
   AddEventToOutboundEvents(

@@ -30,6 +30,7 @@
 #include <sys/ioctl.h>
 
 #include "hci/include/bt_vendor_lib.h"
+#include "osi/include/osi.h"
 #include "osi/include/log.h"
 #include "osi/include/properties.h"
 
@@ -400,6 +401,12 @@ static int bt_vendor_op(bt_vendor_opcode_t opcode, void *param)
 
   case BT_VND_OP_EPILOG:
     bt_vendor_callbacks->epilog_cb(BT_VND_OP_RESULT_SUCCESS);
+    break;
+
+  case BT_VND_OP_A2DP_OFFLOAD_START:
+    break;
+
+  case BT_VND_OP_A2DP_OFFLOAD_STOP:
     break;
   }
 
