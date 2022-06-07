@@ -413,7 +413,10 @@ static void event_command_ready(waiting_command_t* wait_entry) {
     std::lock_guard<std::recursive_timed_mutex> lock(
         commands_pending_response_mutex);
     wait_entry->timestamp = std::chrono::steady_clock::now();
-    list_append(commands_pending_response, wait_entry);
+    if (wait_entry->opcode != 0x200c) {
+        list_append(commands_pending_response, wait_entry);
+    } else
+        LOG_ERROR(LOG_TAG, "Skip wait_entry->opcode = 0x%x", wait_entry->opcode);
   }
   // Send it off
   packet_fragmenter->fragment_and_dispatch(wait_entry->command);
